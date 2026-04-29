@@ -13,6 +13,7 @@ Most existing collectors in the platform target a single API or registry (one so
 | Source | Status | Subfolder | Description |
 |---|---|---|---|
 | Prosjektbanken | live | `sources/prosjektbanken/` | Forskningsrådet open project data. Three sub-sources via `KILDER`: `FORISS` (44.6K competitive grants), `EU` (5.1K Horizon contracts), `SKATTEFUNN` (53.4K approved tax-deduction projects). |
+| SkatteFUNN innsendte | live | `sources/skattefunn/` | Forskningsrådet's official SkatteFUNN application archives (XLSX). Two rolling files: 2002–2024 historical (~70K søknader, godkjent + avslått) and the current rolling May 2024 → present file. **Has direct `Organisasjonsnummer`** — supersedes Prosjektbanken's `Kilde=SKATTEFUNN` for SkatteFUNN-specific work. |
 | Investinor | planned | `sources/investinor/` | Direct portfolio holdings from `investinor.no`. |
 | StartupLab | planned | `sources/startuplab/` | Member firms and alumni from `startuplab.no`. |
 | Katapult | planned | `sources/katapult/` | Cohort listings. |
@@ -70,6 +71,7 @@ Each source runs as its own Cloud Run job to allow independent scheduling and re
 | Source | Job name | Schedule (Europe/Oslo) | CPU / Mem |
 |---|---|---|---|
 | Prosjektbanken | `prosjektbanken-collector` | `0 6 * * 1` weekly Mondays | 1 vCPU / 1 GiB |
+| SkatteFUNN innsendte | `skattefunn-collector` | `15 6 * * 1` weekly Mondays | 1 vCPU / 512 MiB |
 
 Image: `europe-north1-docker.pkg.dev/sondreskarsten-d7d14/brreg-pipelines/startup-sources-collector:latest`
 
