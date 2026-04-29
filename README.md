@@ -13,7 +13,9 @@ Most existing collectors in the platform target a single API or registry (one so
 | Source | Status | Subfolder | Description |
 |---|---|---|---|
 | Prosjektbanken | live | `sources/prosjektbanken/` | Forskningsrådet open project data. Three sub-sources via `KILDER`: `FORISS` (44.6K competitive grants), `EU` (5.1K Horizon contracts), `SKATTEFUNN` (53.4K approved tax-deduction projects). |
-| SkatteFUNN innsendte | live | `sources/skattefunn/` | Forskningsrådet's official SkatteFUNN application archives (XLSX). Two rolling files: 2002–2024 historical (~70K søknader, godkjent + avslått) and the current rolling May 2024 → present file. **Has direct `Organisasjonsnummer`** — supersedes Prosjektbanken's `Kilde=SKATTEFUNN` for SkatteFUNN-specific work. |
+| SkatteFUNN innsendte | live | `sources/skattefunn/` | Forskningsrådet's official SkatteFUNN application archives (XLSX). Two rolling files: 2002–2024 historical (~70K søknader, godkjent + avslått) and the current rolling May 2024 → present file. Has direct `Organisasjonsnummer`. |
+| CORDIS | live | `sources/cordis/` | EU Framework Programme bulk CSV exports from `cordis.europa.eu/data`. Three programmes: HORIZON Europe (2021–2027, ~30 MB), H2020 (2014–2020, ~55 MB), FP7 (2007–2013, ~33 MB). Each ZIP contains project + organization CSVs; Norwegian rows recovered via `country == "NO"` and `vatNumber`. |
+| Innovasjon Norge | live | `sources/innovasjon_norge/` | Live tildelingsrapport CSV from `indatapublic.blob.core.windows.net`. ~17 MB latin-1 / `;` separated, refreshed nightly. Has direct `Org-nr` column. |
 | Investinor | planned | `sources/investinor/` | Direct portfolio holdings from `investinor.no`. |
 | StartupLab | planned | `sources/startuplab/` | Member firms and alumni from `startuplab.no`. |
 | Katapult | planned | `sources/katapult/` | Cohort listings. |
@@ -72,6 +74,8 @@ Each source runs as its own Cloud Run job to allow independent scheduling and re
 |---|---|---|---|
 | Prosjektbanken | `prosjektbanken-collector` | `0 6 * * 1` weekly Mondays | 1 vCPU / 1 GiB |
 | SkatteFUNN innsendte | `skattefunn-collector` | `15 6 * * 1` weekly Mondays | 1 vCPU / 512 MiB |
+| CORDIS | `cordis-collector` | `30 6 1 * *` monthly 1st | 1 vCPU / 1 GiB |
+| Innovasjon Norge | `innovasjon-norge-collector` | `45 6 * * *` daily | 1 vCPU / 512 MiB |
 
 Image: `europe-north1-docker.pkg.dev/sondreskarsten-d7d14/brreg-pipelines/startup-sources-collector:latest`
 
