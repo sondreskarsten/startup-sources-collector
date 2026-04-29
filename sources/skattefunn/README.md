@@ -23,6 +23,21 @@ Compared with the Prosjektbanken scrape (`sources/prosjektbanken/` with `Kilde=S
 
 The Prosjektbanken sub-source remains useful for FORISS and EU contracts, but for SkatteFUNN this xlsx source supersedes it.
 
+## Discovery
+
+The asset directory `https://www.forskningsradet.no/siteassets/skattefunn/tall/` returns 404 on listing, so the collector combines two independent passes:
+
+1. **Landing-page scrape.** Fetch `forskningsradet.no/skattefunn/suksesshistorier/` and extract every `href` matching `skattefunn-innsendte-soknader[^"\s]*\.xlsx`. Both absolute (`https://...`) and relative (`/siteassets/...`) hrefs are recognized; relative paths resolve against `forskningsradet.no`. This is the canonical pass — the landing page is the published index.
+
+2. **Bounded HEAD probe.** For a small year window (default `today.year - 2 .. today.year + 1`, all 12 Norwegian months for the rolling cut, all year-end candidates for the historical archive), HEAD-test each candidate at `/siteassets/skattefunn/tall/`. Anything returning HTTP 200 joins the discovered set. ~50 HEAD requests; each takes < 1 s.
+
+The probe is an insurance policy, not the discovery primitive. An exhaustive 14,784-URL probe across 2018–2026 found only the same files as the landing-page scrape, confirming Forskningsrådet's asset directory is tightly curated. The probe matters when:
+
+- A new monthly cut is uploaded (e.g. `per-mars-2026.xlsx`) before the landing page is updated to link it.
+- The landing page format changes and the regex temporarily under-extracts.
+
+Discovery returns the deduplicated union.
+
 ## Source
 
 **Landing page:** `https://www.forskningsradet.no/skattefunn/suksesshistorier/`

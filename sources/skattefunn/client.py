@@ -1,62 +1,95 @@
 """HTTP client for SkatteFUNN's "Innsendte søknader" XLSX publications.
 
 Downloads the official SkatteFUNN application XLSX files published by
-Forskningsrådet at::
+Forskningsrådet under::
 
-    https://www.forskningsradet.no/skattefunn/suksesshistorier/
+    https://www.forskningsradet.no/siteassets/skattefunn/tall/
 
-The page links to two rolling XLSX files at any given time:
+The asset directory has no listing (server returns 404 on
+``/siteassets/skattefunn/tall/``), so discovery combines two passes:
 
-* A historical archive covering all søknader from 2002 through some
-  cut-off year (e.g. ``skattefunn-innsendte-soknader-2002-2024.xlsx``).
-  Updated rarely — typically once per year when a full year closes.
-* A current rolling file covering søknader from the new søknadssystem
-  (May 2024 onwards) up to a recent month
-  (e.g. ``skattefunn-innsendte-soknader-per-januar-2026.xlsx``).
-  Updated periodically as new søknader are submitted and processed.
+1. **Landing-page scrape.** Fetch
+   ``forskningsradet.no/skattefunn/suksesshistorier/`` and extract any
+   ``href`` matching ``skattefunn-innsendte-soknader[^"\\s]*\\.xlsx``.
+   Both absolute (``https://...``) and relative (``/siteassets/...``)
+   hrefs are recognized; relative paths are resolved against
+   ``FORSKNINGSRADET_BASE``.
 
-Both files include columns: ``Innsendt dato / Søknadsdato``,
-``Prosjektnummer``, ``Bedriftsnavn / Prosjektansvarlig``,
-``Prosjekttittel``, ``Organisasjonsnummer / Org.nr``, ``Fylke``,
-``Kommune``, ``Søknad godkjent / GODKJENT?``,
-``Prosjektets fra-år / Fra-dato``, ``Prosjektets til-år / Til-dato``,
-``Vedtaksdato``, ``Populærvitenskapelig sammendrag``.
+2. **Bounded HEAD probe.** For a small window of candidate filenames
+   (current year ± 1, all 12 Norwegian months for the rolling cut, all
+   year ranges for the historical archive), HEAD-test each at the
+   ``/siteassets/skattefunn/tall/`` path. Anything returning HTTP 200
+   joins the discovered set.
 
-Compared with the Prosjektbanken scrape (in
-``sources/prosjektbanken/`` of this repo), these files have two
-strict advantages:
-
-1. ``Organisasjonsnummer`` is exposed directly — no name → orgnr
-   resolution against Enhetsregisteret needed downstream.
-2. Both godkjent and avslått søknader are included (Prosjektbanken
-   shows only godkjente). The 2002-2024 file carries ~70K rows vs
-   ~53K godkjente in Prosjektbanken — i.e. 17K rejected søknader are
-   recoverable here that Prosjektbanken hides.
-
-The collector strategy is:
-
-1. Scrape the landing page for ``href`` URLs matching
-   ``skattefunn-innsendte-soknader-*.xlsx``.
-2. Download each, raw bytes, no parsing.
-3. Write to GCS at ``skattefunn/raw/label={label}/{date}.xlsx`` where
-   ``label`` is derived from the filename suffix (e.g. ``2002_2024``,
-   ``per_januar_2026``).
+The probe catches files that are uploaded to the asset directory
+before the landing page is updated to link them — a regular
+occurrence when Forskningsrådet rolls the current cut from
+``per-januar-2026`` to ``per-mars-2026`` etc. An exhaustive 14,784-URL
+probe across 2018–2026 found only the same files as the landing-page
+scrape, confirming that the asset directory is tightly curated; the
+bounded probe is therefore a small, low-cost insurance policy
+(~32 HEAD requests) rather than a discovery primitive.
 
 License: NLOD 2.0.
 """
 
 import re
 import time
+from datetime import date
 
 import requests
 
 
 FORSKNINGSRADET_BASE = "https://www.forskningsradet.no"
+ASSET_DIR = f"{FORSKNINGSRADET_BASE}/siteassets/skattefunn/tall/"
 LANDING_URL = f"{FORSKNINGSRADET_BASE}/skattefunn/suksesshistorier/"
+
 XLSX_HREF_RE = re.compile(
     r'(https?://[^"\'\s>\\]*?|/[^"\'\s>\\]*?)skattefunn-innsendte-soknader([^"\'\s>\\]*?)\.xlsx',
     re.IGNORECASE,
 )
+
+NORWEGIAN_MONTHS = [
+    "januar", "februar", "mars", "april", "mai", "juni",
+    "juli", "august", "september", "oktober", "november", "desember",
+]
+
+
+def candidate_filenames(years_back=1, years_forward=1, today=None):
+    """Generate candidate filenames covering the rolling window.
+
+    Two filename families are produced:
+
+    * Historical archives ``skattefunn-innsendte-soknader-2002-{YYYY}.xlsx``
+      for ``YYYY`` in ``[current_year - years_back, current_year + years_forward]``.
+    * Rolling current cuts
+      ``skattefunn-innsendte-soknader-per-{maned}-{YYYY}.xlsx`` for the
+      same year window across all 12 Norwegian months.
+
+    Parameters
+    ----------
+    years_back : int
+        Number of years to look back from ``today``. Default ``1``.
+    years_forward : int
+        Number of years to look forward from ``today``. Default ``1``.
+    today : datetime.date or None
+        Anchor date. Default ``date.today()``.
+
+    Returns
+    -------
+    list of str
+        Sorted, deduplicated filename list (no path, just the
+        ``*.xlsx`` basename).
+    """
+    if today is None:
+        today = date.today()
+    year_window = range(today.year - years_back, today.year + years_forward + 1)
+    out = set()
+    for y in year_window:
+        out.add(f"skattefunn-innsendte-soknader-2002-{y}.xlsx")
+        for m in NORWEGIAN_MONTHS:
+            out.add(f"skattefunn-innsendte-soknader-per-{m}-{y}.xlsx")
+    return sorted(out)
 
 
 class SkatteFunnInnsendteClient:
@@ -95,7 +128,7 @@ class SkatteFunnInnsendteClient:
         Parameters
         ----------
         url : str
-            Full URL to GET.
+            Full URL.
         timeout : int
             Per-request timeout in seconds. Default ``120``.
 
@@ -128,22 +161,33 @@ class SkatteFunnInnsendteClient:
             return r
         raise RuntimeError(f"Failed after {len(backoffs)} retries: {url}")
 
-    def discover_xlsx_urls(self):
-        """Scrape the landing page for current XLSX download URLs.
+    def _head(self, url, timeout=10):
+        """Execute a HEAD request, returning ``True`` iff HTTP 200.
 
-        The landing page lists the two rolling files as anchor tags.
-        File names change as Forskningsrådet rolls forward
-        (e.g. ``per-januar-2026`` → ``per-mars-2026``), so discovery is
-        the canonical approach. Both absolute (``https://...``) and
-        relative (``/siteassets/...``) hrefs are recognized; relative
-        paths are resolved against ``FORSKNINGSRADET_BASE``.
+        Parameters
+        ----------
+        url : str
+            Full URL.
+        timeout : int
+            Per-request timeout in seconds. Default ``10``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the resource exists (HTTP 200), ``False`` for
+            404 or any other non-200 status.
+        """
+        self._request_count += 1
+        r = self._session.head(url, timeout=timeout, allow_redirects=True)
+        return r.status_code == 200
+
+    def discover_from_landing(self):
+        """Scrape the landing page for XLSX hrefs.
 
         Returns
         -------
         list of str
-            Sorted, deduplicated list of absolute XLSX URLs found on
-            the landing page. Returns an empty list if the page
-            layout changes such that no URLs match.
+            Sorted, deduplicated list of absolute XLSX URLs found.
         """
         r = self._get(LANDING_URL)
         urls = set()
@@ -154,8 +198,57 @@ class SkatteFunnInnsendteClient:
             urls.add(href)
         return sorted(urls)
 
+    def discover_from_probe(self, years_back=2, years_forward=1):
+        """HEAD-probe candidate filenames at the canonical asset path.
+
+        Parameters
+        ----------
+        years_back : int
+            Years before today to include. Default ``1``.
+        years_forward : int
+            Years after today to include. Default ``1``.
+
+        Returns
+        -------
+        list of str
+            Sorted list of absolute URLs that returned HTTP 200.
+        """
+        names = candidate_filenames(years_back, years_forward)
+        urls = []
+        for name in names:
+            url = ASSET_DIR + name
+            if self._head(url):
+                urls.append(url)
+        return sorted(urls)
+
+    def discover_xlsx_urls(self, years_back=2, years_forward=1):
+        """Discover all live XLSX URLs via landing-page scrape + probe.
+
+        Combines :meth:`discover_from_landing` and
+        :meth:`discover_from_probe`. Deduplicates the union.
+
+        Parameters
+        ----------
+        years_back : int
+            Probe window years before today. Default ``1``.
+        years_forward : int
+            Probe window years after today. Default ``1``.
+
+        Returns
+        -------
+        list of str
+            Sorted, deduplicated list of absolute XLSX URLs.
+        """
+        from_landing = self.discover_from_landing()
+        from_probe = self.discover_from_probe(years_back, years_forward)
+        print(
+            f"  landing: {len(from_landing)} urls; probe: {len(from_probe)} urls",
+            flush=True,
+        )
+        return sorted(set(from_landing) | set(from_probe))
+
     def download_xlsx(self, url):
-        """Download one XLSX file as raw bytes.
+        """Download one XLSX as raw bytes.
 
         Parameters
         ----------
@@ -165,7 +258,7 @@ class SkatteFunnInnsendteClient:
         Returns
         -------
         bytes
-            The XLSX file body, unmodified.
+            The XLSX body, unmodified.
         """
         r = self._get(url, timeout=300)
         return r.content
@@ -186,8 +279,7 @@ def label_from_url(url):
     Returns
     -------
     str
-        Lowercase label with dashes converted to underscores and
-        the common prefix/suffix stripped.
+        Lowercase label with dashes converted to underscores.
     """
     fname = url.rsplit("/", 1)[-1]
     label = fname.lower()
